@@ -1,0 +1,9 @@
+Id_Cliente,Origen_de_pedido,Fecha_Compra_Anterior,Fecha_Ultima_Compra
+C001,Tienda online,01/10/2026,04/15/2026
+C002,Tienda fisica,02/01/2026,02/20/2026
+C003,App,11/01/2025,01/05/2026
+C004,Tienda online,06/01/2025,09/01/2025
+C005,Tienda fisica,03/01/2026,03/25/2026
+C006,App,12/01/2025,02/01/2026
+C007,Tienda online,10/01/2025,11/01/2025
+C008,Tienda fisica,01/15/2026,04/01/2026

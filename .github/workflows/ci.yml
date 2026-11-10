@@ -1,0 +1,78 @@
+name: CI
+
+# Solo se dispara por push/pull_request normales (nunca pull_request_target,
+# que ejecutaría este workflow con permisos del repo base sobre código de un fork).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Permisos mínimos: el workflow solo lee el repo, no escribe nada
+# (sin esto, GitHub concede por defecto permisos de escritura al GITHUB_TOKEN).
+permissions:
+  contents: read
+
+# Cancela una ejecución anterior de la misma rama si llega un push nuevo.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke-test:
+    name: Smoke test (sin dependencias externas)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      # Acciones fijadas por SHA de commit (no por tag mutable) para evitar
+      # que una acción de terceros cambie de contenido bajo el mismo tag.
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Verificar que no hay dependencias externas
+        run: |
+          python -c "import ast,sys
+          for path in ('scripts/lifecycle_segmentation.py',):
+              tree = ast.parse(open(path, encoding='utf-8').read(), path)
+              stdlib = set(sys.stdlib_module_names)
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Import):
+                      mods = [a.name.split('.')[0] for a in node.names]
+                  elif isinstance(node, ast.ImportFrom):
+                      mods = [node.module.split('.')[0]] if node.module else []
+                  else:
+                      continue
+                  bad = [m for m in mods if m not in stdlib]
+                  if bad:
+                      sys.exit(f'{path}: import no estandar detectado: {bad}')
+          print('OK: solo librería estándar')
+          "
+
+      - name: Segmentación sobre el CSV de ejemplo (global)
+        run: |
+          python scripts/lifecycle_segmentation.py --input ejemplo/clientes_ejemplo.csv \
+            --id-col Id_Cliente --prev-date-col Fecha_Compra_Anterior \
+            --last-date-col Fecha_Ultima_Compra --date-format "%m/%d/%Y" \
+            --as-of 2026-11-10 --output /tmp/segmentos.csv
+          test -s /tmp/segmentos.csv
+          lines=$(wc -l < /tmp/segmentos.csv)
+          test "$lines" -gt 1
+
+      - name: Segmentación con ciclo separado por canal (--channel-col)
+        run: |
+          python scripts/lifecycle_segmentation.py --input ejemplo/clientes_ejemplo.csv \
+            --id-col Id_Cliente --prev-date-col Fecha_Compra_Anterior \
+            --last-date-col Fecha_Ultima_Compra --channel-col Origen_de_pedido \
+            --date-format "%m/%d/%Y" --as-of 2026-11-10 --output /tmp/segmentos_canal.csv
+          test -s /tmp/segmentos_canal.csv
+          grep -q "Estado_Ciclo_Vida" /tmp/segmentos_canal.csv
