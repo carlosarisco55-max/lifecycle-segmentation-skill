@@ -2,9 +2,9 @@
 
 [![CI](https://github.com/carlosarisco55-max/lifecycle-segmentation-skill/actions/workflows/ci.yml/badge.svg)](https://github.com/carlosarisco55-max/lifecycle-segmentation-skill/actions/workflows/ci.yml)
 
-Herramienta en Python que clasifica a los clientes de cualquier negocio en estados de ciclo de vida (Activo Caliente/Templado/Frío, Inactivo Congelado/Ultra Congelado/Iceberg) y calcula su **ciclo de repetición de compra** — el tiempo real entre dos compras de un mismo cliente, usado como unidad de medida en vez de cortes fijos arbitrarios (ej. "30/90/365 días").
+Herramienta en Python que clasifica a los clientes de cualquier negocio en estados de ciclo de vida (Activo Caliente/Templado/Frío, Inactivo Congelado/Ultra Congelado/Iceberg) y calcula su **ciclo de repetición de compra**: cada cuánto vuelve de verdad un cliente (percentil 75, no la media). Con ese ciclo fija los días críticos en los que conviene activar cada disparador de recompra.
 
-Complementa a [`rfm-segmentation-skill`](https://github.com/carlosarisco55-max/rfm-segmentation-skill): el RFM ordena por valor, esta herramienta ordena por **estado de relación** (¿sigue vivo o ya se fue?) — son preguntas distintas sobre la misma base de clientes.
+Complementa a [`rfm-segmentation-skill`](https://github.com/carlosarisco55-max/rfm-segmentation-skill): el RFM ordena por valor, esta herramienta ordena por **estado de relación** (¿sigue vivo o ya se fue?) y por **momento** (¿cuándo toca hablarle?).
 
 Script de Python de librería estándar (sin pandas ni dependencias que instalar), empaquetado también como *skill* de Claude Code.
 
@@ -12,28 +12,34 @@ Script de Python de librería estándar (sin pandas ni dependencias que instalar
 
 Dado un CSV con la fecha de la compra anterior y la última compra de cada cliente, responde:
 
-- **¿Cada cuánto repite compra un cliente, de verdad?** (no la media, que el sesgo de la cola larga siempre infla)
-- **¿Qué clientes están activos y cuáles ya se fueron?**, usando como corte el ciclo real del negocio, no un número inventado
-- **¿Qué porcentaje de la base está realmente viva** (indicador 20/80 vs 50/50 vs 65/35)?
-- **¿Cuándo hay que lanzar el disparador de recompra** antes de que el cliente cruce su ciclo esperado?
+- **¿Cada cuánto repite compra un cliente, de verdad?** La media no sirve: siempre la infla la cola de clientes que tardan más de un año.
+- **¿Qué clientes están activos y cuáles ya se fueron?**, y con qué "temperatura".
+- **¿Qué porcentaje de la base está viva?** (indicador 20/80 · 50/50 · 65/35).
+- **¿Cuándo hay que lanzar el disparador de recompra**, y cuántos clientes hay hoy en cada momento del ciclo?
 
-## Cómo funciona (resumen)
+## Dos reglas que el script aplica siempre
 
-1. Para cada cliente, calcula los días entre su penúltima y su última compra (`Dias_Repeticion`).
-2. Calcula el **percentil 75** de esa distribución (no la media ni la mediana) como "ciclo estratégico" — el tramo donde ya ha repetido el 75% de los clientes. Si hay columna de canal, lo calcula **por canal** (el ciclo de una compra en tienda física no es el mismo que online).
-3. Clasifica a cada cliente según los días transcurridos desde su última compra, usando múltiplos de ese ciclo estratégico (no meses fijos):
+1. **El estado se calcula con la recencia** (días desde la última compra), **nunca con los días entre compras**. Clasificar como "activo" a quien repitió rápido hace dos años es el error más común; en el ejercicio de validación, una fórmula así clasificaba mal a 903 de 2.500 clientes.
+2. **La fecha de referencia es la última compra registrada, no hoy.** Con `today()` el resultado cambia cada día que se ejecuta. En el ejercicio de validación, ejecutarlo seis meses después de la última compra bajaba los activos del 65% al 42%, sin que hubiera pasado nada en el negocio. Se puede fijar otra con `--as-of`; si queda más de 30 días por detrás de la última compra, el script avisa.
 
-| Estado | Corte (sobre el ciclo estratégico) |
+## Cómo funciona
+
+1. Para cada cliente calcula los días entre su penúltima y su última compra (`Dias_Repeticion`).
+2. Calcula media, mediana y **percentil 75**, que es el ciclo estratégico: el día en que ya ha repetido el 75% de los clientes. Si hay columna de canal, lo calcula también por canal y avisa cuando un canal se aparta más de un 15% del global.
+3. Clasifica a cada cliente por días desde la última compra. Por defecto usa los cortes de la clase, que se pueden cambiar con `--cuts`:
+
+| Subestado | Días desde la última compra |
 |---|---|
-| Activo Caliente | ≤ 0.6× |
-| Activo Templado | ≤ 1× |
-| Activo Frío | ≤ 2× |
-| Inactivo Congelado | ≤ 4× |
-| Inactivo Ultra Congelado | ≤ 6× |
-| Inactivo Iceberg | > 6× |
+| Activo Caliente | ≤ 120 (4 meses) |
+| Activo Templado | 121-240 (4-8 meses) |
+| Activo Frío | 241-365 (8-12 meses) |
+| Inactivo Congelado | 366-730 (12-24 meses) |
+| Inactivo Ultra Congelado | 731-1.095 (24-36 meses) |
+| Inactivo Iceberg | > 1.095 |
 
-4. Calcula el indicador de salud de la base (% activos) y lo compara contra los umbrales 20/80, 50/50, 65/35.
-5. Sugiere los días críticos ("disparadores") del calendario de recuperación: a qué día desde la última compra conviene lanzar cada pieza, y por qué los primeros días del ciclo no deben llevar impacto.
+4. Calcula la salud de la base (% activos) frente a los umbrales 20/80, 50/50 y 65/35.
+5. Sitúa a cada cliente en su momento del ciclo: silencio (no impactar hasta la mitad del ciclo), disparadores, prórroga (30 días tras cerrar el ciclo: la ventana de recuperación más rentable) o fuera de ciclo.
+6. Añade la **antigüedad mínima** (días desde la penúltima compra). Sin fecha de alta es lo único que se puede afirmar sobre la antigüedad: el cliente existe, como poco, desde esa compra.
 
 ## Uso
 
@@ -45,16 +51,15 @@ python scripts/lifecycle_segmentation.py \
   --last-date-col Fecha_Ultima_Compra \
   --channel-col Origen_de_pedido \
   --date-format "%m/%d/%Y" \
-  --as-of 2026-11-10 \
   --output segmentos.csv
 ```
 
-`--channel-col` y `--as-of` son opcionales (sin `--as-of` usa la fecha actual del sistema). Solo librería estándar de Python (`csv`, `statistics`, `datetime`) — sin pandas ni dependencias que instalar.
+`--channel-col`, `--as-of` y `--cuts` son opcionales. Solo librería estándar de Python (`csv`, `statistics`, `datetime`).
 
 ## Output
 
-Un CSV con el estado de ciclo de vida por cliente, más un resumen en consola: ciclo de repetición (media/mediana/P75, global y por canal, con aviso cuando la media se desvía de la mediana en más del 15%), salud de la base, y el calendario de disparadores sugerido.
+Un CSV con, por cliente: `Dias_Repeticion`, `Dias_Desde_Ultima`, `Antiguedad_minima_dias`, `Subestado`, `Estado` y `Momento_del_ciclo`. En consola sale además un resumen con el ciclo de repetición (global y por canal), el reparto por estados, la salud de la base, el calendario de días críticos y cuántos clientes hay hoy en cada momento.
 
-## Origen
+## Origen y validación
 
-Validado contra el ejercicio del Módulo 9 (Marketing Digital e IA Generativa, INESDI) sobre "Segmentación de estados de ciclo de vida" — 2.500 clientes reales con fechas de compra por canal (App / Tienda física / Tienda online). Los resultados del script coinciden con el cálculo manual en pandas usado para resolver el ejercicio.
+Validado contra el ejercicio del Módulo 9 (Marketing Digital e IA Generativa, INESDI), "Segmentación de estados de ciclo de vida": 2.500 clientes con sus dos últimas compras por canal (App / Tienda física / Tienda online). Los resultados coinciden cliente a cliente con el libro de Excel resuelto a mano con fórmulas: P75 de 120 días, 64,7% de activos y 116 clientes en prórroga.

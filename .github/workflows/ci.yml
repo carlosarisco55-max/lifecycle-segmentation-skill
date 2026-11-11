@@ -58,21 +58,31 @@ jobs:
           print('OK: solo librería estándar')
           "
 
-      - name: Segmentación sobre el CSV de ejemplo (global)
+      - name: Segmentación sobre el CSV de ejemplo (referencia por defecto = última compra)
         run: |
           python scripts/lifecycle_segmentation.py --input ejemplo/clientes_ejemplo.csv \
             --id-col Id_Cliente --prev-date-col Fecha_Compra_Anterior \
             --last-date-col Fecha_Ultima_Compra --date-format "%m/%d/%Y" \
-            --as-of 2026-11-10 --output /tmp/segmentos.csv
+            --output /tmp/segmentos.csv | tee /tmp/log.txt
           test -s /tmp/segmentos.csv
           lines=$(wc -l < /tmp/segmentos.csv)
           test "$lines" -gt 1
+          grep -q "ultima compra registrada" /tmp/log.txt
+
+      - name: Referencia lejana debe avisar
+        run: |
+          python scripts/lifecycle_segmentation.py --input ejemplo/clientes_ejemplo.csv \
+            --id-col Id_Cliente --prev-date-col Fecha_Compra_Anterior \
+            --last-date-col Fecha_Ultima_Compra --date-format "%m/%d/%Y" \
+            --as-of 2026-11-10 --output /tmp/segmentos_tarde.csv | tee /tmp/log2.txt
+          grep -q "AVISO" /tmp/log2.txt
 
       - name: Segmentación con ciclo separado por canal (--channel-col)
         run: |
           python scripts/lifecycle_segmentation.py --input ejemplo/clientes_ejemplo.csv \
             --id-col Id_Cliente --prev-date-col Fecha_Compra_Anterior \
             --last-date-col Fecha_Ultima_Compra --channel-col Origen_de_pedido \
-            --date-format "%m/%d/%Y" --as-of 2026-11-10 --output /tmp/segmentos_canal.csv
+            --date-format "%m/%d/%Y" --output /tmp/segmentos_canal.csv
           test -s /tmp/segmentos_canal.csv
-          grep -q "Estado_Ciclo_Vida" /tmp/segmentos_canal.csv
+          head -1 /tmp/segmentos_canal.csv | grep -q "Subestado"
+          head -1 /tmp/segmentos_canal.csv | grep -q "Momento_del_ciclo"

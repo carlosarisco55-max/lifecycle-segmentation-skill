@@ -1,16 +1,19 @@
 """Customer lifecycle-state segmentation (ciclo de vida) + repeat-purchase cycle.
 
-Implements two linked models from the "ciclo de vida" method:
+Two linked models:
 
-1. Repeat-purchase cycle (ciclo de repeticion): given two purchase dates per
-   customer, computes the gap in days and derives the *strategic* cycle as
-   the 75th percentile (NOT the mean, which is always pulled up by the long
-   tail of occasional buyers) -- optionally split by channel, since different
-   channels have different natural cadences.
-2. Lifecycle state (termometro): classifies each customer as
-   Caliente/Templado/Frio (active) or Congelado/Ultra Congelado/Iceberg
-   (inactive) based on days since their last purchase, using the strategic
-   cycle above as the unit of measurement instead of fixed arbitrary months.
+1. Repeat-purchase cycle (ciclo de repeticion): days between each customer's
+   previous and last purchase. The *strategic* cycle is the 75th percentile,
+   not the mean (the long tail of slow repeaters always inflates the mean).
+   Computed globally and, optionally, per channel.
+2. Lifecycle state (termometro): Activo Caliente/Templado/Frio or
+   Inactivo Congelado/Ultra Congelado/Iceberg, based on RECENCY (days since the
+   last purchase) -- never on the repeat gap. Default cuts are the class ones
+   (4/8/12/24/36 months, in days) and can be changed with --cuts.
+
+The reference date defaults to the LAST purchase in the file, never today:
+with today() the result changes every day the script runs, and stale
+training datasets look "dead" for no business reason.
 
 Stdlib only (csv, statistics, datetime, argparse) -- no pandas required.
 
@@ -21,60 +24,59 @@ Usage:
         --last-date-col Fecha_Ultima_Compra \
         --channel-col Origen_de_pedido \
         --date-format "%m/%d/%Y" \
-        --as-of 2026-11-10 \
         --output segmentos.csv
 """
 import argparse
 import csv
 import statistics
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime
+
+LABELS = ["Activo Caliente", "Activo Templado", "Activo Frio",
+          "Inactivo Congelado", "Inactivo Ultra Congelado", "Inactivo Iceberg"]
 
 
 def percentile(values, pct):
-    """pct in [0, 100]. Stdlib-only equivalent of numpy.percentile (linear interpolation)."""
-    if not values:
-        return None
+    """pct in [0, 100]. Same as Excel PERCENTILE.INC / numpy linear interpolation."""
     s = sorted(values)
     if len(s) == 1:
         return s[0]
     k = (len(s) - 1) * (pct / 100)
-    f, c = int(k), min(int(k) + 1, len(s) - 1)
-    if f == c:
-        return s[f]
+    f = int(k)
+    c = min(f + 1, len(s) - 1)
     return s[f] + (s[c] - s[f]) * (k - f)
 
 
-def cycle_stats(days_list):
-    media = statistics.mean(days_list)
-    mediana = statistics.median(days_list)
-    p75 = percentile(days_list, 75)
-    sesgo_pct = ((media - mediana) / mediana * 100) if mediana else 0
-    return {"n": len(days_list), "media": media, "mediana": mediana, "p75": p75, "sesgo_pct": sesgo_pct}
+def cycle_stats(days):
+    media = statistics.mean(days)
+    mediana = statistics.median(days)
+    return {"n": len(days), "media": media, "mediana": mediana, "p75": percentile(days, 75),
+            "sesgo_pct": (media - mediana) / mediana * 100 if mediana else 0}
 
 
-def temperatura(dias_desde_ultima, ciclo):
-    """Classify recency against the strategic cycle (ciclo), not fixed months.
-    Active thresholds: 0.6x / 1x / 2x. Inactive: 4x / 6x / beyond."""
-    if dias_desde_ultima <= ciclo * 0.6:
-        return "Activo Caliente"
-    if dias_desde_ultima <= ciclo:
-        return "Activo Templado"
-    if dias_desde_ultima <= ciclo * 2:
-        return "Activo Frio"
-    if dias_desde_ultima <= ciclo * 4:
-        return "Inactivo Congelado"
-    if dias_desde_ultima <= ciclo * 6:
-        return "Inactivo Ultra Congelado"
-    return "Inactivo Iceberg"
+def subestado(recencia, cuts):
+    for label, cut in zip(LABELS, cuts):
+        if recencia <= cut:
+            return label
+    return LABELS[-1]
+
+
+def momento(recencia, ciclo):
+    if recencia <= ciclo * 0.5:
+        return "1. Silencio (no impactar)"
+    if recencia <= ciclo:
+        return "2. Disparadores de recompra"
+    if recencia <= ciclo + 30:
+        return "3. Prorroga (recuperar ya)"
+    return "4. Fuera de ciclo"
 
 
 def salud_base(pct_activos):
     if pct_activos <= 25:
-        return "20/80 - base quemada o mal gestionada: no hay tratamiento de campana que valga, hay que cambiar procesos"
+        return "20/80 - base quemada o mal gestionada: hay que cambiar procesos, no mandar mas campanas"
     if pct_activos <= 55:
         return "50/50 - normal, se puede mejorar"
-    return "65/35 - excelente, fidelizando bien"
+    return "65/35 - base sana, se esta fidelizando bien"
 
 
 def main():
@@ -84,61 +86,82 @@ def main():
     ap.add_argument("--id-col", required=True)
     ap.add_argument("--prev-date-col", required=True, help="Fecha de la compra ANTERIOR a la ultima")
     ap.add_argument("--last-date-col", required=True, help="Fecha de la ULTIMA compra")
-    ap.add_argument("--channel-col", default=None, help="Columna de canal (opcional); si se da, el ciclo se calcula por canal")
+    ap.add_argument("--channel-col", default=None, help="Columna de canal (opcional): el ciclo se calcula tambien por canal")
     ap.add_argument("--date-format", default="%m/%d/%Y")
-    ap.add_argument("--as-of", default=None, help="Fecha de referencia 'hoy' (YYYY-MM-DD). Por defecto, la fecha actual del sistema.")
+    ap.add_argument("--as-of", default=None,
+                    help="Fecha de referencia YYYY-MM-DD. Por defecto, la ultima compra registrada en el fichero (nunca hoy).")
+    ap.add_argument("--cuts", default="120,240,365,730,1095",
+                    help="Limites en dias de Caliente,Templado,Frio,Congelado,Ultra Congelado (por defecto los de clase: 4/8/12/24/36 meses)")
     args = ap.parse_args()
 
-    as_of = datetime.strptime(args.as_of, "%Y-%m-%d") if args.as_of else datetime.now()
+    cuts = [int(x) for x in args.cuts.split(",")]
+    if len(cuts) != 5 or cuts != sorted(cuts):
+        ap.error("--cuts necesita 5 valores crecientes")
 
     with open(args.input, newline="", encoding="utf-8-sig") as f:
         rows = list(csv.DictReader(f))
+    if not rows:
+        ap.error("el fichero de entrada no tiene filas")
 
     for r in rows:
-        prev = datetime.strptime(r[args.prev_date_col], args.date_format)
-        last = datetime.strptime(r[args.last_date_col], args.date_format)
-        r["_dias_repeticion"] = (last - prev).days
-        r["_dias_desde_ultima"] = (as_of - last).days
+        r["_prev"] = datetime.strptime(r[args.prev_date_col], args.date_format)
+        r["_last"] = datetime.strptime(r[args.last_date_col], args.date_format)
+    max_last = max(r["_last"] for r in rows)
+    as_of = datetime.strptime(args.as_of, "%Y-%m-%d") if args.as_of else max_last
+    print(f"Fecha de referencia: {as_of:%Y-%m-%d}" + ("" if args.as_of else " (ultima compra registrada)"))
+    gap = (as_of - max_last).days
+    if gap > 30:
+        print(f"  AVISO: la referencia es {gap} dias posterior a la ultima compra del fichero. "
+              f"Todos los clientes 'envejecen' {gap} dias sin que haya pasado nada en el negocio.")
+
+    for r in rows:
+        r["Dias_Repeticion"] = (r["_last"] - r["_prev"]).days
+        r["Dias_Desde_Ultima"] = (as_of - r["_last"]).days
+        r["Antiguedad_minima_dias"] = (as_of - r["_prev"]).days
         r["_canal"] = r[args.channel_col] if args.channel_col else "(global)"
 
-    por_canal = defaultdict(list)
-    for r in rows:
-        por_canal[r["_canal"]].append(r["_dias_repeticion"])
-
-    stats_por_canal = {canal: cycle_stats(dias) for canal, dias in por_canal.items()}
-    stats_global = cycle_stats([r["_dias_repeticion"] for r in rows])
-
-    print("=== Ciclo de repeticion (ch16): media vs mediana vs P75 ===")
-    print(f"Global -> n={stats_global['n']} media={stats_global['media']:.1f} "
-          f"mediana={stats_global['mediana']:.1f} P75={stats_global['p75']:.1f} "
-          f"(sesgo media-mediana: {stats_global['sesgo_pct']:.1f}%)")
+    stats_global = cycle_stats([r["Dias_Repeticion"] for r in rows])
+    ciclo = stats_global["p75"]
+    print("\n=== Ciclo de repeticion: media vs mediana vs P75 ===")
+    print(f"Global -> n={stats_global['n']} media={stats_global['media']:.1f} mediana={stats_global['mediana']:.1f} "
+          f"P75={ciclo:.1f} (sesgo media-mediana {stats_global['sesgo_pct']:.1f}%"
+          f"{' -> no presentar la media' if stats_global['sesgo_pct'] > 15 else ''})")
     if args.channel_col:
-        for canal, s in sorted(stats_por_canal.items()):
-            flag = "  <-- usar P75 de este canal, no la media" if s["sesgo_pct"] > 15 else ""
-            print(f"  {canal:20s} n={s['n']:5d} media={s['media']:6.1f} mediana={s['mediana']:6.1f} P75={s['p75']:6.1f}{flag}")
+        por_canal = defaultdict(list)
+        for r in rows:
+            por_canal[r["_canal"]].append(r["Dias_Repeticion"])
+        for canal, dias in sorted(por_canal.items()):
+            s = cycle_stats(dias)
+            aviso = "  <-- ciclo distinto del global, valorar calendario propio" if abs(s["p75"] - ciclo) > 0.15 * ciclo else ""
+            print(f"  {canal:20s} n={s['n']:5d} ({s['n'] / len(rows):5.1%}) media={s['media']:6.1f} "
+                  f"mediana={s['mediana']:6.1f} P75={s['p75']:6.1f}{aviso}")
 
-    # Umbral: ciclo estrategico por canal del propio cliente, o global si no hay canal
     for r in rows:
-        ciclo = stats_por_canal[r["_canal"]]["p75"] if args.channel_col else stats_global["p75"]
-        r["_ciclo_estrategico_cliente"] = ciclo
-        r["Estado_Ciclo_Vida"] = temperatura(r["_dias_desde_ultima"], ciclo)
+        r["Subestado"] = subestado(r["Dias_Desde_Ultima"], cuts)
+        r["Estado"] = "Activo" if r["Subestado"].startswith("Activo") else "Inactivo"
+        r["Momento_del_ciclo"] = momento(r["Dias_Desde_Ultima"], ciclo)
 
-    activos = sum(1 for r in rows if r["Estado_Ciclo_Vida"].startswith("Activo"))
-    pct_activos = activos / len(rows) * 100
-    print(f"\n=== Salud de la base (ch15) ===")
-    print(f"Activos: {activos}/{len(rows)} ({pct_activos:.1f}%) -> {salud_base(pct_activos)}")
+    print("\n=== Estados (por recencia, nunca por dias entre compras) ===")
+    cnt = Counter(r["Subestado"] for r in rows)
+    for lab in LABELS:
+        print(f"  {lab:26s} {cnt.get(lab, 0):6d}  {cnt.get(lab, 0) / len(rows):6.1%}")
+    activos = sum(1 for r in rows if r["Estado"] == "Activo")
+    print(f"Salud de la base: {activos / len(rows):.1%} activos -> {salud_base(activos / len(rows) * 100)}")
 
-    print(f"\n=== Disparadores sugeridos (sobre el ciclo global P75={stats_global['p75']:.0f} dias) ===")
-    c = stats_global["p75"]
-    print(f"  Dia 0            : ultima compra, no impactar (dejar enfriar)")
-    print(f"  Dia {c*0.5:.0f} (~mitad)   : disparador suave")
-    print(f"  Dia {c*0.75:.0f} (avanzado) : segundo disparador, mas tecnico")
-    print(f"  Dia {c*0.9:.0f} (cierre)   : venta persuasiva / cupon")
-    print(f"  Dia {c:.0f}-{c*1.25:.0f} (prorroga): ventana de recuperacion -- la mas rentable, no esperar a 'iceberg'")
+    print(f"\n=== Dias criticos (ciclo estrategico P75 = {ciclo:.0f} dias) ===")
+    print(f"  0-{ciclo * 0.5:.0f}     : silencio, no impactar (la mitad iba a volver sola)")
+    print(f"  {ciclo * 0.5:.0f}        : disparador suave")
+    print(f"  {ciclo * 0.75:.0f}        : segundo disparador")
+    print(f"  {ciclo * 0.9:.0f}       : venta persuasiva / oferta")
+    print(f"  {ciclo:.0f}-{ciclo + 30:.0f}  : prorroga, ventana de recuperacion mas rentable")
+    mom = Counter(r["Momento_del_ciclo"] for r in rows)
+    print("Clientes hoy en cada momento:")
+    for k in sorted(mom):
+        print(f"  {k:30s} {mom[k]:6d}")
 
-    fieldnames = list(rows[0].keys())
+    out_cols = [c for c in rows[0] if not c.startswith("_")]
     with open(args.output, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w = csv.DictWriter(f, fieldnames=out_cols, extrasaction="ignore")
         w.writeheader()
         w.writerows(rows)
     print(f"\nGuardado: {args.output}")
