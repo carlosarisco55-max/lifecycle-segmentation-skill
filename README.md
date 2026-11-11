@@ -60,6 +60,14 @@ python scripts/lifecycle_segmentation.py \
 
 Un CSV con, por cliente: `Dias_Repeticion`, `Dias_Desde_Ultima`, `Antiguedad_minima_dias`, `Subestado`, `Estado` y `Momento_del_ciclo`. En consola sale además un resumen con el ciclo de repetición (global y por canal), el reparto por estados, la salud de la base, el calendario de días críticos y cuántos clientes hay hoy en cada momento.
 
+## Ejemplo en Excel (descargable)
+
+[`ejemplo/Ciclo_Vida_ejemplo.xlsx`](ejemplo/Ciclo_Vida_ejemplo.xlsx) es el mismo método montado en un libro de Excel con fórmulas vivas sobre 1.200 clientes **inventados** ([`clientes_sinteticos.csv`](ejemplo/clientes_sinteticos.csv), generados con [`generar_datos_sinteticos.py`](ejemplo/generar_datos_sinteticos.py)). Incluye parámetros editables, ciclo de repetición con gráfico, estados por canal, matriz de antigüedad × actividad, días críticos y journey de reactivación. Para usarlo con tus datos, pega tus clientes en `Datos_Clientes` (columnas A-D) y arrastra las fórmulas.
+
+En los datos sintéticos la App repite más despacio que los otros canales, así que la comprobación por canal sí encuentra una diferencia (P75 de 200 días frente a 144-150).
+
+Caso de estudio completo, con el ejercicio original y sus hallazgos: [carlosarisco55-max.github.io/casos/ciclo-vida](https://carlosarisco55-max.github.io/casos/ciclo-vida/)
+
 ## Origen y validación
 
 Validado contra el ejercicio del Módulo 9 (Marketing Digital e IA Generativa, INESDI), "Segmentación de estados de ciclo de vida": 2.500 clientes con sus dos últimas compras por canal (App / Tienda física / Tienda online). Los resultados coinciden cliente a cliente con el libro de Excel resuelto a mano con fórmulas: P75 de 120 días, 64,7% de activos y 116 clientes en prórroga.
