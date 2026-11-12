@@ -47,3 +47,8 @@ python scripts/lifecycle_segmentation.py --input <tabla.csv> \
 - **Antigüedad**: la clase cruza actividad × antigüedad (Altas nuevas vinculadas / Vinculado / Desvinculado / Lover / Perdido). Sin fecha de alta solo se conoce la **antigüedad mínima** (`Antiguedad_minima_dias`, desde la penúltima compra). Con ella se confirman algunos segmentos (p. ej. inactivos con 3er año como poco = perdidos), pero los clientes con sus dos compras en el último año quedan indeterminados (pueden ser altas nuevas o históricos). Pide la fecha de primera compra; también hace falta para las cohortes.
 - **Dos escalas de inactivos**: la de clase (Congelado 12-24 / Ultra Congelado 24-36 / Iceberg >36 meses, desde la última compra) y la del libro, cap. 15 (Helado / Congelado / Iceberg, desde que el cliente sale de la actividad). Este skill usa la de clase. Lo que importa es usar una sola convención, escribirla y mantenerla en todos los informes.
 - **Los cortes son de partida, no una ley**: en negocios de compra muy espaciada (mueble, maquinaria, regalos anuales) hay que estirarlos. Una buena comprobación es que el corte de "Caliente" quede cerca del P75 del ciclo de repetición (en el ejercicio de validación coincidían: 120 días).
+
+## Siguiente paso
+
+- `ficha-cliente`: junta esta segmentación con las demás (ciclo de vida, RFM, patrón de cesta, propensión y control) en una fila por cliente con qué, cuándo, palanca de comportamiento y prioridad. Lee el CSV de salida tal cual.
+- `medicion-incremental`: aparta el grupo de control ANTES de activar ningún segmento y mide la venta incremental real.
